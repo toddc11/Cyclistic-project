@@ -1,0 +1,363 @@
+  --Combine 12 monthly data tables into one, March 2021 thru Feb 2022--
+CREATE TABLE IF NOT EXISTS
+  `axial-theater-346316.cyclista_project_google.one_year_trip_data` AS
+SELECT * FROM `axial-theater-346316.cyclista_project_google.feb_2022`
+UNION ALL
+SELECT * FROM `axial-theater-346316.cyclista_project_google.jan_2022`
+UNION ALL
+SELECT * FROM `axial-theater-346316.cyclista_project_google.dec_2021`
+UNION ALL
+SELECT * FROM `axial-theater-346316.cyclista_project_google.nov_2021`
+UNION ALL
+SELECT * FROM `axial-theater-346316.cyclista_project_google.oct_2021`
+UNION ALL
+SELECT * FROM `axial-theater-346316.cyclista_project_google.sep_2021`
+UNION ALL
+SELECT * FROM `axial-theater-346316.cyclista_project_google.aug_2021`
+UNION ALL
+SELECT * FROM `axial-theater-346316.cyclista_project_google.jul_2021`
+UNION ALL
+SELECT * FROM `axial-theater-346316.cyclista_project_google.jun_2021`
+UNION ALL
+SELECT * FROM `axial-theater-346316.cyclista_project_google.may_2021`
+UNION ALL
+SELECT * FROM `axial-theater-346316.cyclista_project_google.apr_2021`
+UNION ALL
+SELECT * FROM `axial-theater-346316.cyclista_project_google.mar_2021` ;
+
+
+  -------------------------------------------------------------------CLEANING------------------------------------------------------------------------
+
+
+  --Check # of rows, check if there are duplicate ride id's--
+WITH
+  check_rows AS (
+  SELECT
+    COUNT(ride_id) AS count_rows,
+    COUNT(DISTINCT ride_id ) AS duplicate_check
+  FROM
+    `axial-theater-346316.cyclista_project_google.one_year_trip_data` )
+SELECT
+  *
+FROM
+  check_rows;
+
+  ---check which cells in the dataset have NULL values and count them
+WITH
+  check_nulls AS (
+  SELECT
+    (SELECT COUNT(*) FROM `axial-theater-346316.cyclista_project_google.one_year_trip_data` WHERE start_station_name IS NULL) start_names_null,
+    (SELECT COUNT(*) FROM `axial-theater-346316.cyclista_project_google.one_year_trip_data` WHERE end_station_name IS NULL) end_names_null,
+    (SELECT COUNT(*) FROM `axial-theater-346316.cyclista_project_google.one_year_trip_data` WHERE start_lat IS NULL) st_lat_null,
+    (SELECT COUNT(*) FROM `axial-theater-346316.cyclista_project_google.one_year_trip_data` WHERE start_lng IS NULL) st_lng_null,
+    (SELECT COUNT(*) FROM `axial-theater-346316.cyclista_project_google.one_year_trip_data` WHERE end_lat IS NULL) end_lat_null,
+    (SELECT COUNT(*) FROM `axial-theater-346316.cyclista_project_google.one_year_trip_data` WHERE member_casual IS NULL) member_casual_null,
+    (SELECT COUNT(*) FROM `axial-theater-346316.cyclista_project_google.one_year_trip_data` WHERE rideable_type IS NULL) ride_type_null,
+    (SELECT COUNT(*) FROM `axial-theater-346316.cyclista_project_google.one_year_trip_data` WHERE started_at IS NULL) started_at_null,
+    (SELECT COUNT(*) FROM `axial-theater-346316.cyclista_project_google.one_year_trip_data` WHERE ended_at IS NULL) end_at_null,
+    (SELECT COUNT(*) FROM `axial-theater-346316.cyclista_project_google.one_year_trip_data` WHERE ride_id IS NULL) ride_id_null,
+    )
+SELECT
+  *
+FROM check_nulls;
+
+  --There are several more end station names and lat/long data that is missing compared to start station data, so I will use only the start station data for the geo-viz
+  ---around 800,000 null values from end_station_names, plus ~5000 missing end station lat/long data
+
+  ----Cleaning NULLS from dataset
+WITH
+  clean_nulls AS(
+  SELECT
+    *
+  FROM
+    `axial-theater-346316.cyclista_project_google.one_year_trip_data`
+  WHERE 
+    ride_id IS NOT NULL ),
+
+----second check
+  check_rows_2 AS (
+  SELECT
+    COUNT(ride_id) AS count_rows,
+    COUNT(DISTINCT ride_id ) AS duplicate_check
+  FROM
+    clean_nulls ),
+
+ -------------CLEANING SEPARATE DATASET FOR GEO VISUALIZATION----------------
+
+  clean_nulls_geo AS (
+    SELECT start_lat, start_lng, member_casual, ride_id, start_station_name
+    FROM
+      `axial-theater-346316.cyclista_project_google.one_year_trip_data`
+    WHERE
+     start_lat IS NOT NULL AND 
+     start_lng IS NOT NULL AND
+     start_station_name IS NOT NULL 
+  ),
+
+  -- select distinct station names--
+  ---check list of station names for problems, duplicates, misspellings, etc
+  start_station_names AS (
+  SELECT
+    DISTINCT start_station_name
+  FROM
+    clean_nulls_geo
+  ORDER BY
+    start_station_name ),
+
+
+  ---delete odd station names,  DIVVY CASSETTE REPAIR MOBILE STATION,  Pawel Bialowas - Test- PBSC charging station,
+  clean_geo AS (
+    SELECT *
+    FROM
+      clean_nulls_geo 
+    WHERE
+      start_station_name NOT LIKE '%DIVVY CASSETTE REPAIR MOBILE STATION%' AND
+      start_station_name NOT LIKE '%Pawel Bialowas - Test- PBSC charging station%'
+  ),
+
+ ---------------------------------------------------------------------PROCESSING-----------------------------------------------------
+
+  --Make Trip Time Column--
+  trip_time_data AS (
+  SELECT*,
+    DATE_DIFF(ended_at, started_at, minute) AS trip_time
+  FROM
+    clean_nulls ),
+
+  --COUNT IF trip time is negative or less than one--
+  count_negative AS (
+  SELECT
+    COUNTIF(trip_time < 0) AS neg_trip_time,
+    COUNTIF(trip_time <=1
+      AND trip_time > 0 ) AS less_than_minute_ride
+  FROM
+    trip_time_data ),
+
+
+  --Clean negative values and rows where trip time isn't over one minute--
+  clean_trip_data AS(
+  SELECT
+    *
+  FROM
+    trip_time_data
+  WHERE
+    trip_time >= 1 ),
+
+
+  --Make Day Of Week Column (Extract(DAYOFWEEK FROM started_at))--
+  clean_with_weekday AS (
+  SELECT
+    *,
+    EXTRACT(DAYOFWEEK FROM started_at) AS day_number
+  FROM
+    clean_trip_data ),
+
+--label the weekday column
+label_weekday AS (
+	SELECT *,
+    CASE
+      WHEN day_number = 1 THEN 'Sunday'
+      WHEN day_number = 2 THEN 'Monday'
+      WHEN day_number = 3 THEN 'Tuesday'
+      WHEN day_number = 4 THEN 'Wednesday'
+      WHEN day_number = 5 THEN 'Thursday'
+      WHEN day_number = 6 THEN 'Friday'
+    ELSE
+    'Saturday'
+  END
+    AS day_of_week
+FROM clean_with_weekday 
+),
+
+  ---check day_of_week for missing values
+  weekday_check AS (
+  SELECT
+    COUNTIF(day_of_week IS NULL)
+  FROM
+    label_weekday ),
+
+      --add month column--
+  clean_with_month AS (
+  SELECT *,
+    EXTRACT(MONTH FROM started_at) AS month_number
+  FROM label_weekday),
+
+--label the month column
+label_month AS (
+	SELECT *,
+    CASE
+      WHEN month_number = 1 THEN 'January'
+      WHEN month_number = 2 THEN 'February'
+      WHEN month_number = 3 THEN 'March'
+      WHEN month_number = 4 THEN 'April'
+      WHEN month_number = 5 THEN 'May'
+      WHEN month_number = 6 THEN 'June'
+      WHEN month_number = 7 THEN 'July'
+      WHEN month_number = 8 THEN 'August'
+      WHEN month_number = 9 THEN 'September'
+      WHEN month_number = 10 THEN 'October'
+      WHEN month_number = 11 THEN 'November'
+    ELSE
+    'December'
+  END
+    AS month
+FROM clean_with_month 
+),
+
+    ---check day_of_week for missing values
+  month_check AS (
+  SELECT
+    COUNTIF(month IS NULL)
+  FROM
+    label_month ),
+
+
+--add hour of day
+clean_with_hour AS(
+  SELECT *,
+    EXTRACT(HOUR FROM started_at) AS hour_of_day
+  FROM label_month 
+),
+
+
+  ---MAKE A FINAL CLEAN, PROCESSED DATASET for analysis (not geoviz dataset)
+  final_df AS(
+    SELECT *
+    FROM clean_with_hour
+  ),
+
+  check_final AS(
+    SELECT
+      COUNT(ride_id) AS count_rows
+    FROM final_df 
+  ),
+
+
+  ----COUNT ridership by station name, round the values in lat/long columns to get one distinct value for each station
+  ridership_geo AS (
+    SELECT
+      start_station_name,
+      COUNTIF(member_casual = "casual") AS casual_number,
+      COUNTIF(member_casual = "member") AS member_number,
+      COUNT(ride_id) AS total_rides,
+      ROUND(AVG(start_lat), 4) AS latitude,
+      ROUND(AVG(start_lng), 4) AS longitude
+    FROM 
+      clean_geo  
+    GROUP BY
+      start_station_name
+    ORDER BY
+      total_rides DESC
+        ),
+
+
+  --------------------------------------------------------------------ANALYSIS-------------------------------------------------------
+
+
+  --average trip time, group by casual and member
+  avg_trip_time AS (
+  SELECT
+    member_casual,
+    AVG(trip_time) AS average_trip_time,
+  FROM
+    final_df
+  GROUP BY
+    member_casual ),
+
+
+  ---ratio of casual to member, save this table for viz? pie chart?
+  user_count AS (
+    --nested query to count numbers in order to calculate total user count
+  WITH
+    count_members AS (
+      SELECT
+        COUNTIF(member_casual = "casual") AS casual_number,
+        COUNTIF(member_casual = "member") AS member_number,
+      FROM
+        final_df )
+  SELECT
+    (casual_number + member_number) AS total_users,
+    casual_number,
+    member_number
+  FROM
+    count_members ),
+
+
+  --group by members and casual, group by day of week.
+  ridership_by_dow AS (
+  SELECT
+    day_of_week,
+    COUNTIF(member_casual = "casual") AS casual,
+    COUNTIF(member_casual = "member") AS member
+  FROM
+    final_df 
+  GROUP BY 
+    day_of_week ),
+
+
+--average of trip time for each day of the week
+avg_trip_time_dow AS (
+  SELECT 
+  day_of_week,
+  member_casual,
+  AVG(trip_time) AS avg_trip_time
+  FROM
+   final_df   
+  GROUP BY
+   day_of_week, member_casual
+  ORDER BY
+   day_of_week
+  ),
+
+  --what months do casual riders rent most, does this differ from members?--
+ridership_by_month AS (
+  SELECT
+    COUNTIF(member_casual = "casual") AS casual,
+    COUNTIF(member_casual = "member") AS member
+  FROM
+    final_df 
+  GROUP BY
+    month ),
+
+---calculate avg trip time every month
+avg_trip_time_month AS (
+  SELECT 
+    month,
+    member_casual,
+    AVG(trip_time) AS trip_time,
+  FROM
+    final_df   
+  GROUP BY
+   month, member_casual
+  ORDER BY
+   month
+),
+
+ridership_by_hour AS (
+  SELECT
+    day_of_week,
+    hour_of_day,
+    COUNTIF(member_casual = "casual") AS casual,
+    COUNTIF(member_casual = "member") AS member
+  FROM
+    final_df 
+  GROUP BY
+  day_of_week, hour_of_day
+  ORDER BY
+  day_of_week, hour_of_day
+)
+
+SELECT
+  *
+FROM
+ ----------------- --GRAB tables from here--------------------------------
+  --ridership_geo 
+  --user_count
+  --avg_trip_time 
+  --avg_trip_time_month 
+  --avg_trip_time_dow 
+  --ridership_by_hour
+  --ridership_by_month;
+  ridership_by_dow;
+
+
